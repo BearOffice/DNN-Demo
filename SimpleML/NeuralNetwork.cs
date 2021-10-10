@@ -5,6 +5,7 @@ using SimpleMath;
 using SimpleMath.Collections;
 using SimpleMath.MathQ;
 using SimpleMath.Supports;
+using SimpleML.Support;
 
 namespace SimpleML
 {
@@ -16,7 +17,7 @@ namespace SimpleML
         private readonly int _learningRounds;
         private readonly int _miniBatchSize;
         private readonly double _learningRate;
-        private readonly int? _randomSeed;
+        private readonly int _randomSeed;
         private List<DoubleMatrix> _layerWeights;
         private List<DoubleMatrix> _layerBiases;  // 1-D matrix
 
@@ -33,7 +34,7 @@ namespace SimpleML
             _learningRounds = learningrounds;
             _miniBatchSize = minibatchsize;
             _learningRate = learningrate;
-            _randomSeed = randomseed;
+            _randomSeed = randomseed ?? new Random().Next();
         }
 
         public ISLModel Train(DoubleMatrix trainingdata, string[] labels, bool overwrite = false)
@@ -83,18 +84,6 @@ namespace SimpleML
 
         private void Initialize(int innum, int outnum)
         {
-            var rand = _randomSeed == null ? new Random() : new Random(_randomSeed.Value);
-
-            DoubleMatrix GenRandomMatrix(int rows, int columns)
-            {
-                var lower = -0.1;
-                var upper = 0.1;
-                var range = upper - lower;
-
-                return new DoubleMatrix(rows, columns)
-                    .Set((_, _) => lower + rand.NextDouble() * range).ToDoubleMatrix();
-            } 
-
             // layer weights: 1 + (hidden - 1) + 1
             _layerWeights = new List<DoubleMatrix>();
 
@@ -105,14 +94,24 @@ namespace SimpleML
             }
             _layerWeights.Add(GenRandomMatrix(outnum, _hiddenLayerSizes[^1]));
 
+
             // layer biases: hidden + 1
             _layerBiases = new List<DoubleMatrix>();
 
             for (var i = 0; i < _hiddenLayerSizes.Length; i++)
             {
-                _layerBiases.Add(GenRandomMatrix(_hiddenLayerSizes[i], 1));
+                _layerBiases.Add(new DoubleMatrix(_hiddenLayerSizes[i], 1));
             }
-            _layerBiases.Add(GenRandomMatrix(outnum, 1));
+            _layerBiases.Add(new DoubleMatrix(outnum, 1));
+
+
+            DoubleMatrix GenRandomMatrix(int rows, int columns)
+            {
+                var randnd = new RandomND(_randomSeed, 0, Math.Sqrt(2.0 / columns));
+
+                return new DoubleMatrix(rows, columns)
+                    .Set((_, _) => randnd.Next()).ToDoubleMatrix();
+            }
         }
 
         private void UpdateNetwork(DoubleMatrix trainingdata, string[] labels)
@@ -153,30 +152,38 @@ namespace SimpleML
         private DoubleMatrix ComputeOutputLayer(DoubleMatrix inputlayer,
             out List<DoubleMatrix> activationlist, out List<DoubleMatrix> zlist)
         {
-            var tempactivationlist = new List<DoubleMatrix>();
-            tempactivationlist.Add(inputlayer);
+            activationlist = new List<DoubleMatrix>();
+            zlist = new List<DoubleMatrix>();
 
-            var tempzlist = new List<DoubleMatrix>();
+            activationlist.Add(inputlayer);
 
-            var output = _layerWeights.Zip(_layerBiases)
-                .Aggregate(inputlayer, (acc, next) =>
-                {
-                    var prevactivation = acc;
-                    var weight = next.First;
-                    var bias = next.Second;
+            // hidden layer
+            for (var i = 0; i < _layerWeights.Count - 1; i++)
+            {
+                var prevactivation = activationlist[^1];
+                var weight = _layerWeights[i];
+                var bias = _layerBiases[i];
+                
+                var z = weight * prevactivation + bias;
+                var activation = ReLU(z);
 
-                    var z = weight * prevactivation + bias;
-                    var activation = ReLU(z);
+                zlist.Add(z);
+                activationlist.Add(activation);
+            }
 
-                    tempzlist.Add(z);
-                    tempactivationlist.Add(activation);
+            // output layer
+            var lprevactivation = activationlist[^1];
+            var lweight = _layerWeights[^1];
+            var lbias = _layerBiases[^1];
 
-                    return activation;
-                });
+            var lz = lweight * lprevactivation + lbias;
+            var lactivation = SoftMax(lz);
 
-            activationlist = tempactivationlist;
-            zlist = tempzlist;
-            return output;
+            zlist.Add(lz);
+            activationlist.Add(lactivation);
+
+
+            return activationlist[^1];
         }
 
         private (List<DoubleMatrix>, List<DoubleMatrix>) BackPropagation(
@@ -214,12 +221,22 @@ namespace SimpleML
         private static DoubleMatrix DerivsOfReLU(DoubleMatrix matrix)
             => matrix.Map(num => num > 0 ? 1.0 : 0.0).ToDoubleMatrix();
 
+        private static DoubleMatrix SoftMax(DoubleMatrix matrix)
+        {
+            var numsexp = matrix.Map(num => Math.Exp(num)).ToDoubleMatrix();
+
+            var numssum = 0.0;
+            numsexp.Iterate(num => numssum += num);
+
+            return numsexp.Map(num => num / numssum).ToDoubleMatrix();
+        }
+
         private DoubleMatrix DerivsOfCost(DoubleMatrix outputlayer, string label)
         {
             var desiredoutput = new DoubleMatrix(outputlayer.RowsNum, outputlayer.ColumnsNum);
             desiredoutput[_outputLabels.ToList().IndexOf(label), 0] = 1.0; // columns = 0, 1-D matrix
 
-            return 2 * (outputlayer - desiredoutput);
+            return outputlayer - desiredoutput;
         }
 
         private static DoubleMatrix PointwiseProduct(DoubleMatrix left, DoubleMatrix right)
